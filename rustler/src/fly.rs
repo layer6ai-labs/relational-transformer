@@ -427,6 +427,10 @@ pub struct Sampler {
     // is unchanged (random walk + same-table fallback).
     #[cfg_attr(not(feature = "vecdb"), allow(dead_code))]
     vector_db_path: Option<String>,
+    // When true, task-table context may only come from the Train split.
+    // Database rows are unaffected. This prevents validation/test labels from
+    // becoming in-context examples during benchmark evaluation.
+    train_only_fallback: bool,
 }
 
 #[pymethods]
@@ -777,10 +781,8 @@ impl Sampler {
             balance_labels,
             timeout_per_item,
             vector_db_path,
+            train_only_fallback,
         };
-        // train_only_fallback is consumed by the closure that builds
-        // table_ranges above; its effect is baked into the per-task
-        // (range_start, range_end) and not stored on the struct.
 
         sampler.create_items();
         if sampler.local_rank == 0 && !sampler.quiet {
@@ -1367,6 +1369,11 @@ impl Sampler {
                         match vdb.next(dataset) {
                             None => break,
                             Some(seed_node_idx) => {
+                                if self.train_only_fallback
+                                    && !(range_start..range_end).contains(&seed_node_idx)
+                                {
+                                    continue;
+                                }
                                 let seed_node = get_node(dataset, seed_node_idx);
                                 if seed_label_missing(seed_node, target_column) {
                                     continue;
@@ -1382,6 +1389,11 @@ impl Sampler {
                 } else {
                     while let Some(seed_node_idx) = vdb.next(dataset) {
                         check_deadline(deadline);
+                        if self.train_only_fallback
+                            && !(range_start..range_end).contains(&seed_node_idx)
+                        {
+                            continue;
+                        }
                         if seed_label_missing(get_node(dataset, seed_node_idx), target_column) {
                             continue;
                         }
@@ -1737,7 +1749,16 @@ impl Sampler {
             p2f_edges.len()
         };
 
-        let total_valid_neighbors = current_node.f2p_edges.len() + valid_p2f_count;
+        let valid_p2f_edges: Vec<_> = p2f_edges.as_slice()[..valid_p2f_count]
+            .iter()
+            .filter(|edge| {
+                !self.train_only_fallback
+                    || edge.table_type == ArchivedTableType::Db
+                    || edge.table_type == ArchivedTableType::Train
+            })
+            .collect();
+
+        let total_valid_neighbors = current_node.f2p_edges.len() + valid_p2f_edges.len();
         if total_valid_neighbors == 0 {
             return None;
         }
@@ -1746,11 +1767,7 @@ impl Sampler {
         if rand_idx < current_node.f2p_edges.len() {
             Some(current_node.f2p_edges[rand_idx].node_idx.into())
         } else {
-            Some(
-                p2f_edges[rand_idx - current_node.f2p_edges.len()]
-                    .node_idx
-                    .into(),
-            )
+            Some(valid_p2f_edges[rand_idx - current_node.f2p_edges.len()].node_idx.into())
         }
     }
 
@@ -1923,6 +1940,13 @@ impl Sampler {
                 // include edges to task table only if seed node belongs to the task table
                 if edge.table_name_idx != start_node.table_name_idx
                     && edge.table_type != ArchivedTableType::Db
+                {
+                    continue;
+                }
+
+                if self.train_only_fallback
+                    && edge.table_type != ArchivedTableType::Db
+                    && edge.table_type != ArchivedTableType::Train
                 {
                     continue;
                 }

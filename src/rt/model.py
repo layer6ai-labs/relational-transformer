@@ -353,7 +353,25 @@ class RelationalTransformer(nn.Module):
                 else m.get("materialize_attn_masks", True)
             ),
         )
-        model.load_state_dict(state_dict)
+        incompatible = model.load_state_dict(state_dict, strict=False)
+        # The released RT-J checkpoint predates the explicit Boolean channel.
+        # It remains exactly compatible on datasets without Boolean cells (such
+        # as rel-f1); keep the new channel's initialized parameters in that case.
+        legacy_boolean = {
+            "enc_dict.boolean.weight",
+            "enc_dict.boolean.bias",
+            "dec_dict.boolean.weight",
+            "dec_dict.boolean.bias",
+            "norm_dict.boolean.scale",
+            "mask_embs.boolean",
+        }
+        unexpected = set(incompatible.unexpected_keys)
+        missing = set(incompatible.missing_keys)
+        if unexpected or not missing.issubset(legacy_boolean):
+            raise RuntimeError(
+                f"checkpoint incompatibility: missing={sorted(missing)}, "
+                f"unexpected={sorted(unexpected)}"
+            )
         model.config = config
         return model.to(device)
 

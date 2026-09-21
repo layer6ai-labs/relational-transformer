@@ -69,8 +69,11 @@ def main() -> None:
     net, config = load_rt_model(args.checkpoint, device=device, compile=False)
     net = net.to(torch.bfloat16)
     task_type = config.get("task_type")
+    embedding_model = config.get("embedding_model", config.get("embedder"))
+    if not embedding_model:
+        raise SystemExit("checkpoint config has neither embedding_model nor embedder")
     print(f"loaded {config.get('name', args.checkpoint)} "
-          f"(task_type={task_type}, embed={config['embedding_model']}) on {device}")
+          f"(task_type={task_type or 'multi'}, embed={embedding_model}) on {device}")
 
     def of_kind(tasks):
         return [t for t in tasks if t.task_type == task_type] if task_type in ("clf", "reg") else tasks
@@ -83,7 +86,9 @@ def main() -> None:
         return [t for t in tasks if t.db_name in sel or f"{t.db_name}/{t.table_name}" in sel]
 
     eval_kwargs = dict(
-        embedding_model=config["embedding_model"], d_text=config["d_text"], device=device,
+        embedding_model=embedding_model,
+        d_text=config.get("d_text", config.get("model", {}).get("d_text")),
+        device=device,
         num_walks=args.num_walks, walk_length=args.walk_length,
         tokens_per_gpu=args.tokens_per_gpu, items_per_task=args.items_per_task,
         num_workers=args.num_workers,
@@ -114,7 +119,7 @@ def main() -> None:
                          **eval_kwargs)
     run_and_report(net, tasks, args.pre_dir, ctx_size=args.ctx_size,
                    reg_metric=args.reg_metric, out_dir=args.out_dir, no_csv=args.no_csv,
-                   evaluator=ev, embedding_model=config["embedding_model"])
+                   evaluator=ev, embedding_model=embedding_model)
 
 
 if __name__ == "__main__":

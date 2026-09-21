@@ -56,7 +56,10 @@ def metric_for(task_type: str, labels, preds, reg_metric: str = "mae") -> tuple[
 def _relbench():
     try:
         import relbench  # noqa: F401
-        from relbench.leaderboard import evaluate_task
+        try:
+            from relbench.submit import evaluate_task
+        except ImportError:  # compatibility with pre-3.0 RelBench
+            from relbench.leaderboard import evaluate_task
 
         return relbench, evaluate_task
     except Exception as e:  # pragma: no cover - import-time guidance
@@ -80,7 +83,9 @@ def _seed_offset(pre_dir: str, db: str, table: str, split: str, embedding_model:
 @cache
 def _load_relbench_task(source: str, table: str):
     relbench, _ = _relbench()
-    return relbench.load_task(source, table)
+    if hasattr(relbench, "load_task"):
+        return relbench.load_task(source, table)
+    return relbench.load_dataset(source).load_task(table)
 
 
 def _train_stats(rtask) -> tuple[float, float]:
@@ -184,7 +189,9 @@ def build_evaluator(tasks, pre_dir, *, embedding_model, d_text, device, ctx_size
         mmap_populate=mmap_populate, balance_labels=False,
         ablate_schema_semantics=False, embedding_model=embedding_model, d_text=d_text,
         shuffle_seed=shuffle_seed, context_seed=context_seed, vector_db_path=None,
-        train_only_fallback=False,
+        # Keep task labels in context restricted to the train split. Without
+        # this, earlier val/test rows can be sampled as labeled examples.
+        train_only_fallback=True,
         global_rank=0, local_rank=0, world_size=1, ddp=False, device=device,
     )
 
